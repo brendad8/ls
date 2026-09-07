@@ -52,15 +52,16 @@ pub fn main(init: std.process.Init) !void
 
     const args = try init.minimal.args.toSlice(arena);
 
-    var path: []u8  = @constCast("."); // default path
-    var one_col: bool     = false;  // list entries in 1 column
-    var show_hidden: bool = false;  // list files/dirs starting with .
-    var long_format: bool = false;  // list entry + additional data
-    var recurse: bool     = false;  // recursively list out contents
-    var sort_mtime: bool  = false;  // sort entries by last modified time
-    var sort_size: bool   = false;  // sort entries by size
-    var row_wise: bool    = false;  // list entries by row then col 
-    var reverse:  bool    = false;  // reverse sorting order
+    var path: []u8  = @constCast(".");   // default path
+    var pattern: []u8 = @constCast("*"); // default pattern
+    var one_col: bool     = false;       // list entries in 1 column
+    var show_hidden: bool = false;       // list files/dirs starting with .
+    var long_format: bool = false;       // list entry + additional data
+    var recurse: bool     = false;       // recursively list out contents
+    var sort_mtime: bool  = false;       // sort entries by last modified time
+    var sort_size: bool   = false;       // sort entries by size
+    var row_wise: bool    = false;       // list entries by row then col 
+    var reverse:  bool    = false;       // reverse sorting order
 
     for (args[1..]) |arg|
     {
@@ -85,13 +86,27 @@ pub fn main(init: std.process.Init) !void
         }
         else
         {
-            // NOTE(bcall): directory will be set to last argument not starting with '-'
-            // TODO(bcall): process patttern!!!
-            path = @ptrCast(@constCast(arg));
+            // NOTE(bcall): path and pattern will be set to last argument not starting with '-'
+            // Examples:
+            //     1. path//pattern* => path = "path//", pattern = "pattern*"
+            //     2. pattern* => path = ".", pattern = "pattern*"
+            //     3. .//*.pattern => path = ".", pattern = "*.pattern"
+           
+            const path_and_pattern = arg;
+            if (std.mem.cutScalarLast(u8, path_and_pattern, '\\')) |split|
+            {
+                path = @constCast(split[0]);
+                pattern = @constCast(split[1]);
+            }
+            else if (std.mem.cutScalarLast(u8, path_and_pattern, '/')) |split|
+            {
+                path = @constCast(split[0]);
+                pattern = @constCast(split[1]);
+            }
         }
     }
 
-    // replace forward slashes with backwards slashes for windows
+    // NOTE(bcall): replace forward slashes with backwards slashes for windows
     for (0..path.len) |i|
     {
         if (path[i] == '/') path[i] = '\\';
@@ -108,9 +123,6 @@ pub fn main(init: std.process.Init) !void
         return;
     };
     _ = real_path;
-    
-    // TODO(brendan): support other patterns like *.c, fileName.*, etc...
-    const pattern = "*";
 
     var file_data: ArrayList(win32.FileData) = try .initCapacity(arena, 30);
     const max_width = try win32.getFileData(

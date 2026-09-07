@@ -51,20 +51,6 @@ pub const FileData = struct {
     parent_num_entries: *usize
 };
 
-
-
-// pub fn main(init: std.process.Init) !void 
-// {
-//     const arena = init.arena.allocator();
-//     var file_data: std.ArrayList(*FileData) = try .initCapacity(arena, 50);
-//     try getFileData(arena, "..", "*", false, true, &file_data);
-//
-//     for (file_data.items) |entry|
-//     {
-//         std.debug.print("{s}, {s}\n", .{entry.*.name, entry.*.parent_name});
-//     }
-// }
-
 pub fn getConsoleWidth() ?usize
 {
     var console_info: win.CONSOLE.USER_IO.INFO.SCREEN_BUFFER = undefined;
