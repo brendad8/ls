@@ -90,13 +90,14 @@ pub fn main(init: std.process.Init) !void
         stderr.flush() catch {};
         return;
     };
+    _ = real_path;
     
     // TODO(brendan): support other patterns like *.c, fileName.*, etc...
     const pattern = "*";
 
     var file_data: ArrayList(win32.FileData) = try .initCapacity(arena, 30);
     const max_width = try win32.getFileData(
-        arena, real_path, pattern, show_hidden, recurse, &file_data
+        arena, path, pattern, show_hidden, recurse, &file_data
     );
 
     //******************************
@@ -126,7 +127,7 @@ pub fn main(init: std.process.Init) !void
         while (current_idx < file_data.items.len)
         {
             const file: win32.FileData = file_data.items[current_idx];
-            stdout.print("\n{s}{s}:\n", .{path, file.parent_name[0..file.parent_name.len-1]}) catch {};
+            stdout.print("\n{s}:\n", .{file.parent_name[0..file.parent_name.len]}) catch {};
             const next_idx = current_idx + file.parent_num_entries.*;
             const subfile_data: []win32.FileData = file_data.items[current_idx..next_idx];
             if (long_format) 
