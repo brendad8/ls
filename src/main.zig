@@ -103,6 +103,14 @@ pub fn main(init: std.process.Init) !void
                 path = @constCast(split[0]);
                 pattern = @constCast(split[1]);
             }
+            else
+            {
+                // NOTE(bcall): if not '\' or '/' then set to pattern if contains * otherwise path
+                if (std.mem.containsAtLeastScalar(u8, path_and_pattern, 1, '*'))
+                {
+                    pattern = @ptrCast(@constCast(path_and_pattern));
+                }
+            }
         }
     }
 
