@@ -9,18 +9,35 @@ const sort      = std.mem.sort;
 const order     = std.mem.order;
 
 
-// TODO(bcall): set to "" if stdout is not a tty
-const BLUE  = "\x1b[34m";
-const GREEN = "\x1b[32m";
-const RESET = "\x1b[0m";
+const ANSI_BLUE:  []const u8 = "\x1b[34m";
+const ANSI_GREEN: []const u8 = "\x1b[32m";
+const ANSI_RESET: []const u8 = "\x1b[0m";
+const ANSI_NONE: []const u8 = "";
+
+var BLUE: []const u8  = ANSI_BLUE;
+var GREEN: []const u8 = ANSI_GREEN;
+var RESET: []const u8 = ANSI_RESET;
 
 pub fn main(init: std.process.Init) !void 
 {
     const io = init.io;
   
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
+    const stdout_file = std.Io.File.stdout();
+    var stdout_file_writer: std.Io.File.Writer = .init(stdout_file, io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
+
+    if (try stdout_file.isTty(io))
+    {
+        if (try stdout_file.supportsAnsiEscapeCodes(io))
+            try stdout_file.enableAnsiEscapeCodes(io);
+    }
+    else
+    {
+        BLUE = ANSI_NONE;
+        GREEN = ANSI_NONE;
+        RESET = ANSI_NONE;
+    }
    
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_file_writer: std.Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
