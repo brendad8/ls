@@ -1,173 +1,163 @@
 
 const std = @import("std");
-const c   = @import("c");
+const win = std.os.windows;
 
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const unicode   = std.unicode;
+extern "kernel32" fn GetStdHandle(std_handle: win.DWORD) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn GetConsoleScreenBufferInfo(console_handle: win.HANDLE, console_info: *win.CONSOLE.USER_IO.INFO.SCREEN_BUFFER) callconv(.winapi) win.BOOL;
+extern "kernel32" fn FindFirstFileExA(path: [*:0]const u8, info_level: c_int, find_data: *anyopaque, search_op: c_int, search_filter: ?*anyopaque, flags: win.DWORD,) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn FindClose(find_handle: win.HANDLE) callconv(.winapi) win.BOOL;
+extern "kernel32" fn FindNextFileA(find_handle: win.HANDLE, find_data: *WIN32_FIND_DATAA) callconv(.winapi) win.BOOL;
+extern "kernel32" fn FileTimeToSystemTime(file_time: *const win.FILETIME, system_time: *SYSTEMTIME,) callconv(.winapi) win.BOOL;
 
-pub const DirEntry = struct
-{
-    name: []const u8,               // entry name
-    is_dir: bool,                   // entry is a directory
-    size: usize,                    // entry size in bytes 
-    mod_time: DateTime,             // last modified time as date struct
-    mod_time_dense: u64,            // last modified time as secs since Jan 1 1970...
-    
-    parent_dir_name: []const u8,    // parent directory name (for recursive)
-    parent_dir_num_entries: *usize, // num entries in parent dir (for recursive)
-    parent_dir_max_fname: *usize    // length of longest name in parent dir (for recursive)
+const WIN32_MAX_PATH = 260;
+const WIN32_FIND_DATAA = extern struct {
+    dwFileAttributes:   win.DWORD,
+    ftCreationTime:     win.FILETIME,
+    ftLastAccessTime:   win.FILETIME,
+    ftLastWriteTime:    win.FILETIME,
+    nFileSizeHigh:      win.DWORD,
+    nFileSizeLow:       win.DWORD,
+    dwReserved0:        win.DWORD,
+    dwReserved1:        win.DWORD,
+    cFileName:          [WIN32_MAX_PATH]u8,
+    cAlternateFileName: [14]win.CHAR,
 };
 
-pub const DateTime = struct 
-{
-    month:  u16,
-    day:    u16,
-    year:   u16,
-    hour:   u16,
-    minute: u16
+const FILE_ATTRIBUTE_HIDDEN: u32    = 0x00000002;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
+const SYSTEMTIME = extern struct {
+    year: u16, 
+    month: u16, 
+    dayOfWeek: u16,
+    day: u16,
+    hour: u16, 
+    minute: u16, 
+    second: u16,
+    milliseconds: u16 
 };
 
-pub const Error = error
-{
-    FindFirstFileExWFailure  // shouldnt hit since dir is already verified
+const DateTime = SYSTEMTIME;
+
+pub const FileData = struct {
+    name:               []const u8,
+    create_time:        u64,
+    last_access_time:   u64,
+    last_write_time:    u64,
+    size:               u64,
+    is_dir:             bool,
+    parent_name:        []const u8,
+    parent_max_width:   *usize,
+    parent_num_entries: *usize
 };
+
+
+
+// pub fn main(init: std.process.Init) !void 
+// {
+//     const arena = init.arena.allocator();
+//     var file_data: std.ArrayList(*FileData) = try .initCapacity(arena, 50);
+//     try getFileData(arena, "..", "*", false, true, &file_data);
+//
+//     for (file_data.items) |entry|
+//     {
+//         std.debug.print("{s}, {s}\n", .{entry.*.name, entry.*.parent_name});
+//     }
+// }
 
 pub fn getConsoleWidth() ?usize
 {
-    var console_info: c.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-    const console_handle: c.HANDLE = c.GetStdHandle(c.STD_OUTPUT_HANDLE);
+    var console_info: win.CONSOLE.USER_IO.INFO.SCREEN_BUFFER = undefined;
+    const win32_stdout_handle: win.DWORD = @bitCast(@as(i32, -11));
+    const console_handle: win.HANDLE = GetStdHandle(win32_stdout_handle);
 
-    if (c.GetConsoleScreenBufferInfo(console_handle, &console_info) != 0) 
-        return @intCast(console_info.srWindow.Right - console_info.srWindow.Left + 1);
+    if (GetConsoleScreenBufferInfo(console_handle, &console_info).toBool()) 
+        return @intCast(console_info.dwWindowSize.X);
 
     return null;
 }
 
-pub fn getFileData(
-    gpa: Allocator,
-    directory: []const u8, 
-    pattern: []const u8, 
-    entries: *ArrayList(DirEntry),
-    include_all: bool,
-    recurse: bool
-) !usize 
+pub fn getFileData(gpa: std.mem.Allocator, path: []const u8, pattern: []const u8, show_all: bool, recurse: bool, files: *std.ArrayList(FileData)) !usize
 {
-    var max_fname_width: usize = 0;         // used for formatting entries evenly into rows/cols
-    var path_buffer: [260]u16 = undefined;  // buffer for creating subdirectory paths in window string fmt
+    var name_max_width: usize = 0;
+    var find_data: WIN32_FIND_DATAA = undefined;
    
-    // queue for exploring subdirectories recursively
-    // initial subdirectory is directory + \
-    var recurse_queue: std.Deque([]u16) = try .initCapacity(gpa, 32);
-    const win_slash = unicode.wtf8ToWtf16LeStringLiteral("\\");
-    try recurse_queue.pushBack(gpa, @constCast(win_slash));
-    while (recurse_queue.len > 0)
+    var queue: std.Deque([:0]const u8) = .empty;
+    if (recurse) { queue = try .initCapacity(gpa, 8); }
+    else         { queue = try .initCapacity(gpa, 1); }
+
+    const path_and_pattern = try std.mem.concatWithSentinel(gpa, u8, &.{path, "\\", pattern}, 0); 
+    try queue.pushBack(gpa, path_and_pattern);
+
+    while (queue.popFront()) |current_path_and_pattern|
     {
-        const subpath16 = recurse_queue.popFront().?;
-        const subpath8 = try unicode.wtf16LeToWtf8Alloc(gpa, subpath16);
-
-        // for tracking number of entries in each subdirectory
-        // this is pointless for non recursive calls since entries.len is known
-        const subpath_num_entries = try gpa.create(usize);
-        subpath_num_entries.* = 0;
-        
-        const subpath_max_fname = try gpa.create(usize);
-        subpath_max_fname.* = 0;
-
-        // TODO(bcall): we are printing start directory on each loop when this only needs to be done once
-        var next_char = try unicode.wtf8ToWtf16Le(&path_buffer, directory); // copy over start directory
-        for (0..subpath16.len) |i|
+        const find_handle = FindFirstFileExA(current_path_and_pattern, 1, &find_data, 0, null, 0,);
+        if (find_handle == win.INVALID_HANDLE_VALUE) 
         {
-           path_buffer[next_char] = subpath16[i]; // copy over current subdirectory path
-           next_char += 1;
+            return name_max_width;
         }
-        next_char += try unicode.wtf8ToWtf16Le(path_buffer[next_char..], pattern);
-        path_buffer[next_char] = 0; // null terminate path for windows
-   
-        var entry_data: c.WIN32_FIND_DATAW = undefined;
-        const get_entries_handle: c.HANDLE = c.FindFirstFileExW(
-            &path_buffer, c.FindExInfoBasic, &entry_data, c.FindExSearchNameMatch, null, 0,
-        );
+        defer _ = FindClose(find_handle);
 
-        if (get_entries_handle == c.INVALID_HANDLE_VALUE) {
-            return Error.FindFirstFileExWFailure; 
-        }
-        defer _ = c.FindClose(get_entries_handle);
+        const path_len: usize = std.mem.indexOf(u8, current_path_and_pattern, pattern).? - 1; // minus one for excluding '\'
+        const current_path = current_path_and_pattern[0..path_len];
 
-        while (true)
+        const parent_num_entries = try gpa.create(usize);
+        parent_num_entries.* = 0;
+
+        const parent_max_width = try gpa.create(usize);
+        parent_max_width.* = 0;
+
+        while (true) 
         {
-            const name16 = std.mem.sliceTo(&entry_data.cFileName, 0);
-            const name8  = try unicode.wtf16LeToWtf8Alloc(gpa, name16);
-          
-            // skip over files that start with '.' or are marked as hidden by windows
-            // unless include_all (-a) is specified
-            var skip = std.mem.eql(u8, name8, ".") or std.mem.eql(u8, name8, "..");
-            skip = skip or (!include_all and name8[0] == '.');
-            skip = skip or (!include_all and entry_data.dwFileAttributes & c.FILE_ATTRIBUTE_HIDDEN != 0);
-            
-            if (!skip)
+            var hidden_file = (find_data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) != 0;
+            hidden_file = hidden_file or find_data.cFileName[0] == '.';
+
+            if (!hidden_file or show_all)
             {
-                subpath_num_entries.* += 1;
-                
-                if (name8.len > subpath_max_fname.*)
-                    subpath_max_fname.* = name8.len;
+                parent_num_entries.* += 1;
+                const name_len = std.mem.indexOfScalar(u8, &find_data.cFileName, 0).?;
+                const name = try gpa.alloc(u8, name_len);
+                @memcpy(name, find_data.cFileName[0..name_len]);
+                name_max_width = @max(name_len, name_max_width);
+                parent_max_width.* = @max(name_len, parent_max_width.*);
 
-                if (name8.len > max_fname_width)
-                    max_fname_width = name8.len; // keep track of longest file or directory name
-
-                var entry: DirEntry = undefined;
-                entry.name = name8;
-                entry.is_dir = (entry_data.dwFileAttributes & c.FILE_ATTRIBUTE_DIRECTORY) != 0;
-
-                // TODO(bcall): maybe a little clunky; especially with win_slash.*[0]
-                if (entry.is_dir and recurse)
-                {
-                    var subpath_buffer: [260]u16 = undefined;
-                    subpath_buffer[0] = win_slash.*[0];
-
-                    for (0..subpath16.len) |i|
-                    {
-                        subpath_buffer[i] = subpath16[i]; // copy current subpath
-                    }
-
-                    subpath_buffer[subpath16.len] = win_slash.*[0];
-                    for (0..name16.len) |i|
-                    {
-                        subpath_buffer[subpath16.len + i] = name16[i];
-                    }
-                    subpath_buffer[subpath16.len + name16.len] = win_slash.*[0];
-                    const subpath_duped = try gpa.dupe(u16, subpath_buffer[0..subpath16.len + name16.len + 1]);
-                    try recurse_queue.pushBack(gpa, subpath_duped);
-                }
-
-                entry.size = (@as(u64, entry_data.nFileSizeHigh) << 32) | @as(u64, entry_data.nFileSizeLow);
-
-                // time is stores as 100s of nano seconds since jan 1 1601 bruhhhh
-                const mod_time_100us = (@as(u64, entry_data.ftLastWriteTime.dwHighDateTime) << 32) | @as(u64, entry_data.ftLastWriteTime.dwLowDateTime);
-                const mod_time_utc: c.time_t = @intCast((mod_time_100us - 116444736000000000) / 10000000); // convert to seconds since epoch
-                const mod_time_local = c.localtime(&mod_time_utc).*;
-                entry.mod_time = .{
-                    .year   = @intCast(mod_time_local.tm_year + 1900),
-                    .month  = @intCast(mod_time_local.tm_mon + 1),
-                    .day    = @intCast(mod_time_local.tm_mday),
-                    .hour   = @intCast(mod_time_local.tm_hour),
-                    .minute = @intCast(mod_time_local.tm_min)
+                const is_dir = find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+                const file: FileData = .{
+                    .name             = name,      
+                    .create_time      = (@as(u64, find_data.ftCreationTime.dwHighDateTime) << 32) | @as(u64, find_data.ftCreationTime.dwHighDateTime),
+                    .last_access_time = (@as(u64, find_data.ftLastAccessTime.dwHighDateTime) << 32) | @as(u64, find_data.ftLastAccessTime.dwHighDateTime),
+                    .last_write_time  = (@as(u64, find_data.ftLastWriteTime.dwHighDateTime) << 32) | @as(u64, find_data.ftLastWriteTime.dwHighDateTime),
+                    .size             = (@as(u64, find_data.nFileSizeHigh) << 32) | @as(u64, find_data.nFileSizeLow),
+                    .is_dir           = is_dir,
+                    .parent_name      = current_path,
+                    .parent_max_width = parent_max_width,
+                    .parent_num_entries = parent_num_entries
                 };
-                entry.mod_time_dense = @intCast(mod_time_utc);
-                entry.parent_dir_name = subpath8;
-                entry.parent_dir_num_entries = subpath_num_entries;
-                entry.parent_dir_max_fname   = subpath_max_fname;
+                try files.append(gpa, file);
 
-                try entries.append(gpa, entry);
-            
-            } // end if (!skip)
-        
-            if (c.FindNextFileW(get_entries_handle, &entry_data) == 0) break;
+                if (is_dir and recurse)
+                {
+                    const new_path_and_pattern: [:0]const u8 = try std.mem.concatWithSentinel(gpa, u8, &.{ current_path, "\\", name, "\\*" }, 0 );
+                    try queue.pushBack(gpa, new_path_and_pattern); 
+                }
+            }
+
+            if (!FindNextFileA(find_handle, &find_data).toBool())
+                break;
         }
     }
-    return max_fname_width;
+
+    return name_max_width;
 }
 
 
+pub fn denseTimeToDateTime(dense_time: u64) DateTime
+{
+    var system_time: DateTime = undefined;
+    var file_time: win.FILETIME = undefined;
 
-
+    file_time.dwLowDateTime = @as(u32, @truncate(dense_time)); 
+    file_time.dwHighDateTime = @as(u32, @truncate(dense_time>>32)); 
+    _ = FileTimeToSystemTime(&file_time, &system_time);
+    return system_time;
+}
