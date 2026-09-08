@@ -86,30 +86,34 @@ pub fn main(init: std.process.Init) !void
         }
         else
         {
-            // NOTE(bcall): path and pattern will be set to last argument not starting with '-'
-            // Examples:
-            //     1. path//pattern* => path = "path//", pattern = "pattern*"
-            //     2. pattern* => path = ".", pattern = "pattern*"
-            //     3. .//*.pattern => path = ".", pattern = "*.pattern"
-           
-            const path_and_pattern = arg;
-            if (std.mem.cutScalarLast(u8, path_and_pattern, '\\')) |split|
+            if (std.mem.containsAtLeastScalar(u8, path_and_pattern, 1, '*'))
             {
-                path = @constCast(split[0]);
-                pattern = @constCast(split[1]);
-            }
-            else if (std.mem.cutScalarLast(u8, path_and_pattern, '/')) |split|
-            {
-                path = @constCast(split[0]);
-                pattern = @constCast(split[1]);
+                // NOTE(bcall): path and pattern will be set to last argument not starting with '-'
+                // Examples:
+                //     1. path//pattern* => path = "path//", pattern = "pattern*"
+                //     2. pattern* => path = ".", pattern = "pattern*"
+                //     3. .//*.pattern => path = ".", pattern = "*.pattern"
+               
+                const path_and_pattern = arg;
+                if (std.mem.cutScalarLast(u8, path_and_pattern, '\\')) |split|
+                {
+                    path = @constCast(split[0]);
+                    pattern = @constCast(split[1]);
+                }
+                else if (std.mem.cutScalarLast(u8, path_and_pattern, '/')) |split|
+                {
+                    path = @constCast(split[0]);
+                    pattern = @constCast(split[1]);
+                }
+                else
+                {
+                    // NOTE(bcall): if not '\' or '/' then set to pattern if contains * otherwise path
+                        pattern = @ptrCast(@constCast(path_and_pattern));
+                }
             }
             else
             {
-                // NOTE(bcall): if not '\' or '/' then set to pattern if contains * otherwise path
-                if (std.mem.containsAtLeastScalar(u8, path_and_pattern, 1, '*'))
-                {
-                    pattern = @ptrCast(@constCast(path_and_pattern));
-                }
+                path = @ptrCast(@constCast(path_and_pattern));
             }
         }
     }
