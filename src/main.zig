@@ -86,6 +86,8 @@ pub fn main(init: std.process.Init) !void
         }
         else
         {
+            const path_and_pattern = arg;
+
             if (std.mem.containsAtLeastScalar(u8, path_and_pattern, 1, '*'))
             {
                 // NOTE(bcall): path and pattern will be set to last argument not starting with '-'
@@ -94,7 +96,6 @@ pub fn main(init: std.process.Init) !void
                 //     2. pattern* => path = ".", pattern = "pattern*"
                 //     3. .//*.pattern => path = ".", pattern = "*.pattern"
                
-                const path_and_pattern = arg;
                 if (std.mem.cutScalarLast(u8, path_and_pattern, '\\')) |split|
                 {
                     path = @constCast(split[0]);
